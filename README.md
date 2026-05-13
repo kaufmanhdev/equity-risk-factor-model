@@ -126,7 +126,7 @@ The output will be saved to `output/equity_risk_factor_model.pdf`.
 - **Sector membership** is the single strongest categorical predictor - Technology and Consumer Discretionary stocks carry significantly higher baseline volatility than Utilities and Consumer Staples, holding other factors constant.
 - **Leverage (D/E ratio)** amplifies volatility, but the magnitude differs meaningfully by sector — the interaction term in Model 4 captures this.
 - **Beta**, as expected, is strongly significant across all models, but fundamental variables add incremental explanatory power beyond it.
-- **Model 3** (`~ log_market_cap + beta + D/E + P/E + sector`) is selected as the best model based on lowest AIC and highest Adjusted R², with well-behaved residuals and no severe multicollinearity (VIF < 5 for all terms).
+- **Model 4** (`~ log_market_cap + beta + D/E + P/E + sector`) is selected as the best model based on lowest AIC and highest Adjusted R², with well-behaved residuals and no severe multicollinearity (VIF < 5 for all terms).
 
 ---
 
