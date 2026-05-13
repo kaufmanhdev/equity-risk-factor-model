@@ -1,0 +1,289 @@
+---
+title: "Equity Risk Factor Model"
+subtitle: "Statistical Methods - Final Project"
+author: "Herman Kaufman"
+date: "9th of May, 2026"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    fig_caption: true
+    latex_engine: xelatex
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE,
+	out.width = "90%"
+)
+options(show.signif.stars = FALSE)
+
+library(tidyverse)
+library(tidyquant)
+library(broom)
+library(car)
+library(knitr)
+library(scales)
+library(kableExtra)
+```
+
+---
+
+# Introduction
+
+## Dataset
+
+All of the data for this project was pulled through R. Tickers and GICS sector classifications come from Wikipedia (scraped with `rvest`). Daily price history comes from Yahoo Finance through `tidyquant`. Firm-level fundamentals (PE ratio, beta, debt/equity, market cap, revenue growth) come from the Finnhub REST API via `httr`. Everything reflects the trailing 12 months from when the scripts were last run.
+
+## Objective
+
+The question driving this analysis: can we predict how volatile a stock will be over the next year using information we already have about the company? The response variable is 1-year realized volatility, computed as the annualized standard deviation of daily log returns.
+
+## Variables
+
+```{r variable-table, echo=FALSE}
+var_table <- tibble(
+  Variable    = c("volatility_1yr", "log_market_cap", "beta",
+                  "debt_equity", "pe_ratio", "revenue_growth", "sector"),
+  Type        = c(rep("Continuous", 6), "Factor"),
+  Role        = c("Response (Y)", rep("Predictor", 6)),
+  Description = c(
+    "Annualized std dev of daily log returns (trailing 12 months)",
+    "Log-transformed market capitalization, reduces right skew",
+    "1-year rolling beta vs. S&P 500, captures systematic risk",
+    "Total debt / shareholders equity, leverage proxy",
+    "Price-to-earnings ratio, valuation and growth expectations",
+    "Year-over-year revenue growth (%)",
+    "GICS sector classification, 11 levels; reference = Utilities"
+  )
+)
+kable(var_table, caption = "Variable Descriptions and Roles", booktabs = TRUE) %>%
+  kable_styling(latex_options = c("hold_position"), font_size = 9) %>%
+  column_spec(1, width = "3cm") %>%
+  column_spec(2, width = "2.5cm") %>%
+  column_spec(3, width = "2cm") %>%
+  column_spec(4, width = "7cm")
+```
+
+---
+
+# Data Exploration
+
+```{r load-data}
+df <- read_csv("../data/processed/sp500_clean.csv", show_col_types = FALSE) %>%
+  mutate(sector = as.factor(sector))
+
+df$sector <- relevel(df$sector, ref = "Utilities")
+
+dim(df)
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+df %>%
+  select(-symbol, -sector) %>%
+  summary()
+```
+
+## Response Variable Distribution
+
+```{r hist-volatility, fig.cap="Distribution of 1-year realized volatility. Most stocks fall between 15% and 40%."}
+ggplot(df, aes(x = volatility_1yr)) +
+  geom_histogram(bins = 40, fill = "#2C3E7A", color = "white", alpha = 0.85) +
+  geom_vline(aes(xintercept = median(volatility_1yr)),
+             color = "#E84040", linetype = "dashed", linewidth = 0.8) +
+  labs(title = "Distribution of 1-Year Realized Volatility",
+       subtitle = "Red dashed line = median",
+       x = "Annualized Volatility", y = "Count") +
+  scale_x_continuous(labels = percent_format()) +
+  theme_minimal()
+```
+
+## Volatility by Sector
+
+```{r boxplot-sector, fig.cap="Volatility distributions by GICS sector, ordered by median. Tech and Consumer Discretionary sit at the top; Utilities at the bottom.", fig.height=5}
+sector_order <- df %>%
+  group_by(sector) %>%
+  summarise(med = median(volatility_1yr)) %>%
+  arrange(desc(med)) %>%
+  pull(sector)
+
+df %>%
+  mutate(sector = factor(sector, levels = sector_order)) %>%
+  ggplot(aes(x = sector, y = volatility_1yr, fill = sector)) +
+  geom_boxplot(alpha = 0.8, outlier.size = 0.8) +
+  labs(title = "Volatility by GICS Sector",
+       x = NULL, y = "Annualized Volatility") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1),
+        legend.position = "none")
+```
+
+## Correlation Matrix
+
+```{r correlation, fig.cap="Pairwise correlations. Beta shows the strongest positive correlation with volatility. Log market cap is negatively correlated, consistent with the size effect.", fig.height=6}
+library(GGally)
+
+df %>%
+  select(volatility_1yr, log_market_cap, beta,
+         debt_equity, pe_ratio, revenue_growth) %>%
+  ggpairs(
+    columnLabels = c("Volatility", "Log Mkt Cap", "Beta",
+                     "D/E", "P/E", "Rev Growth"),
+    upper = list(continuous = wrap("cor", size = 3.5)),
+    lower = list(continuous = wrap("points", alpha = 0.2, size = 0.5)),
+    diag  = list(continuous = wrap("densityDiag",
+                                   fill = "#2C3E7A", alpha = 0.5))
+  ) +
+  theme_minimal(base_size = 9)
+```
+
+---
+
+# Model Creation
+
+## Model 1: Baseline
+
+`volatility_1yr ~ log_market_cap + beta`
+
+Starting simple makes sense here. Beta and market cap are both price-derived and widely available, so if they already explain most of the variance, there's not much reason to reach for balance sheet data. Beta measures how much a stock moves relative to the market. Larger firms tend to be less erratic because their revenue is more diversified.
+
+```{r model1}
+model1 <- lm(volatility_1yr ~ log_market_cap + beta, data = df)
+summary(model1)
+```
+
+Beta comes through strongly: more market-sensitive stocks are more volatile. Log market cap is negative and significant, which is the size effect showing up. Adjusted R^2^ leaves a lot of variance unexplained, but that was expected from a two-variable model.
+
+---
+
+## Model 2: Fundamentals
+
+`volatility_1yr ~ log_market_cap + beta + debt_equity + pe_ratio`
+
+Fundamentals are the natural next step. A highly leveraged company has less cushion when earnings disappoint, which should show up as more volatile returns. A high P/E stock is priced for growth, and growth expectations can reprice quickly. This model tests whether balance sheet data adds anything once market prices are already in.
+
+```{r model2}
+model2 <- lm(volatility_1yr ~ log_market_cap + beta +
+               debt_equity + pe_ratio, data = df)
+summary(model2)
+```
+
+```{r vif2}
+vif(model2)
+```
+
+Adding D/E and P/E barely moves the needle. Adjusted R^2^ actually dips slightly from Model 1, and neither variable is strongly significant on its own. Once beta and firm size are in, raw leverage and valuation ratios don't add much. VIF values are all under 5, so multicollinearity isn't the issue. The fundamentals just aren't carrying much signal in isolation.
+
+---
+
+## Model 3: Sector Factor
+
+`volatility_1yr ~ log_market_cap + beta + debt_equity + pe_ratio + sector`
+
+Two companies with identical PE ratios, leverage, and market caps can still have very different volatility profiles depending on the industry. Sector captures that structural context. Utilities are set as the reference level since they consistently show the lowest volatility in the sample, so every other sector's coefficient tells us how much more volatile it is relative to that baseline, holding everything else constant.
+
+```{r model3}
+model3 <- lm(volatility_1yr ~ log_market_cap + beta +
+               debt_equity + pe_ratio + sector, data = df)
+summary(model3)
+```
+
+```{r sector-coefs}
+tidy(model3) %>%
+  filter(str_detect(term, "sector")) %>%
+  mutate(sector   = str_remove(term, "sector"),
+         estimate = round(estimate, 4),
+         p.value  = round(p.value, 4)) %>%
+  select(sector, estimate, p.value) %>%
+  arrange(desc(estimate)) %>%
+  kable(caption = "Sector Coefficients vs. Utilities (Reference Level)")
+```
+
+Adjusted R^2^ jumps from 0.198 to 0.382. Sector alone is doing more work than all the fundamentals combined. Health Care and Energy show the highest coefficients relative to Utilities, though not all sectors reach conventional significance thresholds.
+
+---
+
+## Model 4: Leverage × Sector
+
+`volatility_1yr ~ log_market_cap + beta + debt_equity * sector`
+
+Model 2 showed that leverage on its own doesn't predict volatility well. The reason is probably that leverage means different things in different industries. A bank with a D/E of 10 is operating normally. An industrial company at the same ratio is in trouble. The interaction term lets the slope of leverage vary by sector, which is a more realistic way to model it.
+
+```{r model4}
+model4 <- lm(volatility_1yr ~ log_market_cap + beta +
+               debt_equity * sector, data = df)
+summary(model4)
+```
+
+Several interaction terms reach significance, which supports the idea that leverage reads differently by sector. This is the biggest fit improvement of any step so far; Adjusted R^2^ hits 0.454. The tradeoff is complexity: 23 parameters fit from 137 observations, which is worth flagging even if the fit metrics support it.
+
+---
+
+# Model Diagnostics & Selection
+
+## Fit Metric Comparison
+
+```{r comparison-table}
+comparison <- tibble(
+  Model  = paste0("Model ", 1:4),
+  Adj_R2 = c(summary(model1)$adj.r.squared,
+             summary(model2)$adj.r.squared,
+             summary(model3)$adj.r.squared,
+             summary(model4)$adj.r.squared),
+  AIC    = c(AIC(model1), AIC(model2), AIC(model3), AIC(model4))
+) %>% mutate(across(c(Adj_R2, AIC), ~round(., 4)))
+
+kable(comparison, caption = "Model Fit Comparison")
+```
+
+## Residual Diagnostics - Model 3
+
+```{r diag-model3, fig.cap="Four-panel residual diagnostics for Model 3. The Q-Q plot and scale-location plot are the key OLS assumption checks.", fig.height=7}
+par(mfrow = c(2, 2))
+plot(model3)
+```
+
+Residuals vs Fitted looks reasonably flat, with no obvious curvature pointing to a missed non-linearity. The Q-Q plot follows the diagonal through the middle of the distribution, with some upper-tail deviation driven mostly by observation 69, which appears as an outlier in every model. Scale-Location trends slightly upward, suggesting mild heteroscedasticity at higher fitted values, though not severely. Nothing in the leverage plot crosses Cook's distance contours.
+
+---
+
+# Conclusion
+
+## Selected Model
+
+Model 4, `volatility_1yr ~ log_market_cap + beta + debt_equity * sector`, is the strongest model in this analysis. Adjusted R^2^ is 0.454 and AIC is -321.1, both the best of the four. The jump from Model 3 (Adj R^2^ = 0.382) comes entirely from the leverage-sector interaction, which adds about 7 percentage points of explained variance for a single set of terms.
+
+The specification also makes economic sense, not just statistical sense. Letting the slope of D/E vary by sector reflects how practitioners actually read leverage; the same ratio is a calm day at a bank and a red flag at a manufacturer. That keeps the model from being adjusted purely to fit noise.
+
+On the diagnostic side, the residuals behave reasonably well. Observation 69 flags as an outlier in every model, suggesting it's a company that experienced something unusual during the sample period (an earnings shock or corporate event). The Scale-Location plot shows a slight upward trend at higher fitted values, pointing to mild heteroscedasticity. In a more formal analysis I'd consider robust standard errors, but for the purposes of this project the pattern isn't severe enough to change the conclusions.
+
+## Model Comparison Summary
+
+| Model | Specification | Adj R^2^ | AIC |
+|---|---|---|---|
+| 1 | Baseline: market signals only | 0.207 | -288.7 |
+| 2 | + Fundamentals (D/E, P/E) | 0.198 | -285.2 |
+| 3 | + Sector factor | 0.382 | -311.7 |
+| 4 | + D/E x Sector interaction | 0.454 | -321.1 |
+
+## Takeaway
+
+Stock volatility is layered. Market sensitivity (beta) and firm size are a reasonable starting point, but sector adds a lot more, and the gap between an Information Technology stock and a Utility is real and persistent even after controlling for fundamentals. Once leverage interacts with sector, the same D/E ratio carries different risk depending on the business context, which a simple additive coefficient misses entirely. A low-beta, low-leverage stock in a volatile sector may well be riskier than a high-beta stock in a stable one, and that's what this model captures.
+
+---
+
+## AI Use Statement
+
+Claude (Anthropic) was used during this project to tidy the R scripts for readability (consistent naming conventions, spacing, and inline comments) and to assist with research and literature review. All analytical decisions, model specifications, variable choices, and written interpretations are my own.
+
+---
