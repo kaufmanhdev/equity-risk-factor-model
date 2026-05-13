@@ -39,7 +39,7 @@ equity-risk-factor-model/
 │   └── model_comparison.png
 │
 ├── report/
-│   └── equity_risk_factor_model.Rmd        # R Markdown source → knits to final PDF
+│   └── equity_risk_factor_model.Rmd        # R Markdown source -> knits to final PDF
 │
 └── output/
     └── equity_risk_factor_model.pdf        # Final submission
@@ -51,9 +51,9 @@ equity-risk-factor-model/
 
 **Source:** Live data pulled programmatically via `tidyquant`
 
-- **Constituents & sectors:** `tq_index("SP500")` — current S&P 500 members and GICS sector classifications sourced from Wikipedia
-- **Price history:** `tq_get(get = "stock.prices")` — 1 year of daily adjusted closing prices from Yahoo Finance
-- **Fundamentals:** `tq_get(get = "key.stats")` — PE ratio, beta, market cap, debt/equity, revenue growth from Yahoo Finance
+- **Constituents & sectors:** `tq_index("SP500")` -> current S&P 500 members and GICS sector classifications sourced from Wikipedia
+- **Price history:** `tq_get(get = "stock.prices")` -> 1 year of daily adjusted closing prices from Yahoo Finance
+- **Fundamentals:** `tq_get(get = "key.stats")` -> PE ratio, beta, market cap, debt/equity, revenue growth from Yahoo Finance
 
 Data reflects the trailing 12 months as of the date `01_data_prep.R` is run. Raw API responses are cached to `data/raw/` - the fetch only runs once.
 
