@@ -51,7 +51,19 @@ rsconnect/
 # Project-specific
 data/raw/
 data/processed/
+
+# Claude Code
 .claude/
+CLAUDE.md
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
 
 # Keep folder structure
 !data/raw/.gitkeep
